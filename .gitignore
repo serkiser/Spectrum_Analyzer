@@ -179,3 +179,17 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Archivos FITS grandes (no se suben al repo)
+datos/*.fits
+
+# Archivos locales de VSCode
+.vscode/
+
+# Archivos de configuración de usuario (Windows/Unix)
+*.swp
+*.swo
+*.bak
+*.tmp
+Thumbs.db
+.DS_Store
