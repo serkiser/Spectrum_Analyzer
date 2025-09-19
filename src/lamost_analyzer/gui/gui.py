@@ -1,4 +1,3 @@
-# lamost_analyzer/gui/gui.py
 """
 Módulo para la interfaz gráfica del Spectrum Analyzer
 """
