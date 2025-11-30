@@ -1,0 +1,3 @@
+=== REPORTE DE ANÁLISIS ESPECTRAL LAMOST ===
+
+Archivo analizado: NGC_2071.fits
