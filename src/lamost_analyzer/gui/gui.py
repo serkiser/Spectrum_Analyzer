@@ -1,6 +1,7 @@
 # lamost_analyzer/gui/gui.py
 """
 Módulo para la interfaz gráfica del Spectrum Analyzer
+Versión Final: Terminal Integrada, Menús Modulares, StyleEngine.
 """
 
 import sys
@@ -20,14 +21,375 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import numpy as np
 
+# Importaciones nuevas para modo universal
+from astropy.io import fits
+from astropy.table import Table
+
 from lamost_analyzer.core.fits_processor import read_fits_file, valid_mask, rebin_spectrum
 from lamost_analyzer.core.utils import try_savgol, running_percentile, enhance_line_detection
 from lamost_analyzer.core.spectral_analysis import generate_spectral_report
 from lamost_analyzer.config import DEFAULT_PARAMS, SPECTRAL_LINES
 
 
+# ==============================================================================
+# 1. STYLE ENGINE (Gestor de Estilos Centralizado)
+# ==============================================================================
+class StyleEngine:
+    """Motor centralizado de estilos para evitar repetir código CSS"""
+    
+    @staticmethod
+    def _px(size, scale):
+        return int(size * scale)
+
+    @staticmethod
+    def _pt(size, scale):
+        return int(size * scale)
+
+    @staticmethod
+    def get_groupbox_style(theme, scale):
+        s = scale
+        return f"""
+            QGroupBox {{
+                font-weight: bold;
+                border: {StyleEngine._px(2, s)}px solid {theme['border']};
+                border-radius: {StyleEngine._px(5, s)}px;
+                margin-top: 1ex;
+                padding-top: {StyleEngine._px(10, s)}px;
+                background-color: {theme['secondary']};
+                color: {theme['text_primary']};
+                font-size: {StyleEngine._pt(11, s)}pt;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: {StyleEngine._px(10, s)}px;
+                padding: 0 5px 0 5px;
+                color: {theme['accent']};
+            }}
+        """
+
+    @staticmethod
+    def get_combobox_style(theme, scale):
+        s = scale
+        return f"""
+            QComboBox {{
+                background-color: {theme['secondary']};
+                border: {StyleEngine._px(1, s)}px solid {theme['border']};
+                border-radius: {StyleEngine._px(3, s)}px;
+                padding: {StyleEngine._px(4, s)}px;
+                color: {theme['text_secondary']};
+                min-width: {StyleEngine._px(80, s)}px;
+                font-size: {StyleEngine._pt(9, s)}pt;
+            }}
+            QComboBox:focus {{
+                border: {StyleEngine._px(1, s)}px solid {theme['accent']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: {StyleEngine._px(20, s)}px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: {StyleEngine._px(5, s)}px solid transparent;
+                border-right: {StyleEngine._px(5, s)}px solid transparent;
+                border-top: {StyleEngine._px(5, s)}px solid {theme['text_secondary']};
+                width: 0px;
+                height: 0px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {theme['secondary']};
+                border: {StyleEngine._px(1, s)}px solid {theme['border']};
+                color: {theme['text_secondary']};
+                selection-background-color: {theme['accent']};
+                font-size: {StyleEngine._pt(9, s)}pt;
+            }}
+        """
+
+    @staticmethod
+    def get_label_style(theme, scale):
+        return f"color: {theme['text_secondary']}; font-weight: bold; font-size: {StyleEngine._pt(10, scale)}pt;"
+
+    @staticmethod
+    def get_table_style(theme, scale):
+        s = scale
+        return f"""
+            QTableWidget {{
+                background-color: {theme['primary']};
+                border: {StyleEngine._px(1, s)}px solid {theme['border']};
+                border-radius: {StyleEngine._px(4, s)}px;
+                color: {theme['text_secondary']};
+                gridline-color: {theme['border']};
+                font-size: {StyleEngine._pt(9, s)}pt;
+            }}
+            QTableWidget::item {{
+                padding: {StyleEngine._px(6, s)}px;
+                border-bottom: {StyleEngine._px(1, s)}px solid {theme['border']};
+            }}
+            QTableWidget::item:selected {{
+                background-color: {theme['accent']};
+                color: #ffffff;
+            }}
+            QHeaderView::section {{
+                background-color: {theme['secondary']};
+                color: {theme['accent']};
+                font-weight: bold;
+                padding: {StyleEngine._px(6, s)}px;
+                border: none;
+                border-bottom: {StyleEngine._px(2, s)}px solid {theme['accent']};
+                font-size: {StyleEngine._pt(9, s)}pt;
+            }}
+        """
+
+    @staticmethod
+    def get_scrollarea_style(theme, scale):
+        s = scale
+        return f"""
+            QScrollArea {{
+                background-color: {theme['secondary']};
+                border: none;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {theme['secondary']};
+            }}
+            QScrollBar:vertical {{
+                background-color: {theme['secondary']};
+                width: {StyleEngine._px(15, s)}px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {theme['accent']};
+                border-radius: {StyleEngine._px(7, s)}px;
+                min-height: {StyleEngine._px(20, s)}px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {theme['accent_hover']};
+            }}
+            QScrollBar:horizontal {{
+                background-color: {theme['secondary']};
+                height: {StyleEngine._px(15, s)}px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background-color: {theme['accent']};
+                border-radius: {StyleEngine._px(7, s)}px;
+                min-width: {StyleEngine._px(20, s)}px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {theme['accent_hover']};
+            }}
+        """
+
+
+# ==============================================================================
+# 2. LOGGER WIDGET (Terminal)
+# ==============================================================================
+class LoggerWidget(QTextEdit):
+    """Widget estilo Terminal para ver logs y diagnósticos"""
+    def __init__(self, theme_manager=None, scale=1.0):
+        super().__init__()
+        self.theme_manager = theme_manager
+        self.scale = scale
+        self.setReadOnly(True)
+        self.setMinimumHeight(int(100 * scale))
+        self.apply_style()
+        
+        font = self.font()
+        font.setFamily("Consolas, 'Courier New', monospace")
+        font.setPointSize(int(9 * scale))
+        self.setFont(font)
+
+    def apply_style(self):
+        theme = self.theme_manager.get_current_theme()
+        s = self.scale
+        self.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {theme['primary']};
+                color: #00ff00;
+                border: {int(1*s)}px solid {theme['border']};
+                border-radius: {int(4*s)}px;
+                padding: {int(5*s)}px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: {int(9*s)}pt;
+            }}
+            QScrollBar:vertical {{
+                background-color: {theme['secondary']};
+                width: {int(10*s)}px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {theme['accent']};
+                border-radius: {int(3*s)}px;
+            }}
+        """)
+
+    def write_log(self, message):
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.End)
+        
+        if "error" in message.lower() or "exception" in message.lower():
+            self.setTextColor(QColor("#ff5555"))
+        else:
+            theme = self.theme_manager.get_current_theme()
+            self.setTextColor(QColor(theme['text_secondary']))
+            
+        cursor.insertText(message)
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
+    def clear_log(self):
+        self.clear()
+
+
+# ==============================================================================
+# 3. STREAM TO LOGGER (Magia para print)
+# ==============================================================================
+class StreamToLogger:
+    """Redirige el flujo de salida estándar a nuestro LoggerWidget"""
+    def __init__(self, logger_widget):
+        self.logger = logger_widget
+
+    def write(self, message):
+        if message.strip() != "":
+            self.logger.write_log(message)
+
+    def flush(self):
+        pass
+
+
+# ==============================================================================
+# 4. MENU MANAGER (Menús Modulares)
+# ==============================================================================
+class MenuManager:
+    """Gestor modular de menús. Permite agregar/quitarse menús editando la configuración."""
+    
+    DEFAULT_MENU_STRUCTURE = [
+        {
+            "name": "File",
+            "items": [
+                {"text": "Open FITS", "shortcut": "Ctrl+O", "method": "open_file"},
+                {"text": "Save Results", "shortcut": "Ctrl+S", "method": "save_results"},
+                {"separator": True},
+                {"text": "Exit", "shortcut": "Ctrl+Q", "method": "close"}
+            ]
+        },
+        {
+            "name": "Edit",
+            "items": [
+                {"text": "Copy Results", "shortcut": "Ctrl+C", "method": "copy_results"},
+                {"text": "Clear Results", "shortcut": "Ctrl+L", "method": "clear_results"},
+                {"text": "Clear Log", "method": "clear_log"}
+            ]
+        },
+        {
+            "name": "View",
+            "items": [
+                {"text": "Reset Plot", "shortcut": "Ctrl+R", "method": "reset_plot"},
+                {"text": "Toggle Toolbar", "shortcut": "Ctrl+T", "method": "toggle_toolbar"},
+                {"text": "Fullscreen", "shortcut": "F11", "method": "toggle_fullscreen"},
+                {"text": "Toggle Terminal", "shortcut": "F12", "method": "toggle_terminal"}
+            ]
+        },
+        {
+            "name": "Tools",
+            "items": [
+                {"text": "Run Analysis", "shortcut": "F5", "method": "analyze"},
+                {"separator": True},
+                {"text": "Theme Settings", "shortcut": "Ctrl+,", "method": "show_theme_settings"},
+                {"text": "Batch Processing", "method": "batch_processing"}
+            ]
+        },
+        {
+            "name": "Help",
+            "items": [
+                {"text": "Documentation", "shortcut": "F1", "method": "show_documentation"},
+                {"separator": True},
+                {"text": "About", "method": "show_about"}
+            ]
+        }
+    ]
+
+    def __init__(self, main_window, menu_bar):
+        self.main_window = main_window
+        self.menu_bar = menu_bar
+
+    def build_menus(self, menu_config=None):
+        self.menu_bar.clear()
+        if menu_config is None:
+            menu_config = self.DEFAULT_MENU_STRUCTURE
+
+        for menu_data in menu_config:
+            menu = self.menu_bar.addMenu(menu_data["name"])
+            for item in menu_data.get("items", []):
+                if item.get("separator"):
+                    menu.addSeparator()
+                else:
+                    action = QAction(item["text"], self.main_window)
+                    if "shortcut" in item:
+                        action.setShortcut(item["shortcut"])
+                    method_name = item["method"]
+                    if hasattr(self.main_window, method_name):
+                        action.triggered.connect(getattr(self.main_window, method_name))
+                    menu.addAction(action)
+
+
+# ==============================================================================
+# 5. CARGADOR UNIVERSAL
+# ==============================================================================
+def load_spectrum_universal(file_path):
+    """
+    Carga FITS o TXT de forma universal.
+    Devuelve: (wavelength, flux)
+    """
+    try:
+        with fits.open(file_path) as hdul:
+            data = hdul[1].data if len(hdul) > 1 else hdul[0].data
+            header = hdul[0].header
+            wavelength, flux = None, None
+
+            if isinstance(data, fits.fitsrec.FITS_rec):
+                colnames = data.columns.names
+                flux_col = next((c for c in ['flux', 'FLUX', 'Flux', 'intensity', 'Intensity'] if c in colnames), None)
+                wave_col = next((c for c in ['wavelength', 'WAVELENGTH', 'lambda', 'loglam'] if c in colnames), None)
+                
+                if flux_col and wave_col:
+                    flux = data[flux_col]
+                    wavelength = data[wave_col]
+                else:
+                    if len(colnames) >= 2:
+                        wavelength = np.array(data[colnames[0]])
+                        flux = np.array(data[colnames[1]])
+
+            elif isinstance(data, np.ndarray):
+                flux = data.flatten()
+                crval = header.get('CRVAL1')
+                cdelt = header.get('CDELT1')
+                crpix = header.get('CRPIX1', 1)
+                
+                if crval is not None and cdelt is not None:
+                    n_pixels = len(flux)
+                    wavelength = crval + (np.arange(n_pixels) - crpix + 1) * cdelt
+                else:
+                    wavelength = np.arange(len(flux))
+            
+            if wavelength is not None:
+                return np.array(wavelength), np.array(flux)
+
+    except Exception as e:
+        pass
+
+    try:
+        data = Table.read(file_path, format='ascii')
+        return np.array(data.columns[0]), np.array(data.columns[1])
+    except Exception:
+        pass
+
+    return None, None
+
+
+# ==============================================================================
+# 6. THEME MANAGER
+# ==============================================================================
 class ThemeManager:
-    """Gestor centralizado de temas para la aplicación"""
+    """Gestor centralizado de temas y escalado de la aplicación"""
     
     THEMES = {
         "dark": {
@@ -63,6 +425,14 @@ class ThemeManager:
         self.current_theme_name = self.settings.value("theme", "dark")
         self.custom_accent = self.settings.value("accent_color", "#007acc")
         
+        screen = QApplication.primaryScreen().availableGeometry()
+        height = screen.height()
+        
+        if height < 1300:
+            self.scale = 0.9
+        else:
+            self.scale = 0.75
+        
     def get_current_theme(self):
         theme = self.THEMES[self.current_theme_name].copy()
         theme["accent"] = self.custom_accent
@@ -90,18 +460,29 @@ class ThemeManager:
         return QColor(color).darker(100 + percent).name()
 
 
+# ==============================================================================
+# 7. SETTINGS DIALOG
+# ==============================================================================
 class SettingsDialog(QDialog):
-    """Diálogo de configuración de temas y colores"""
+    """Diálogo de configuración de temas y colores con ESCALADO REDUCIDO"""
     
     def __init__(self, theme_manager, parent=None):
         super().__init__(parent)
         self.theme_manager = theme_manager
         self.parent = parent
+        self.scale = theme_manager.scale
+        base_font = self.font()
+        base_font.setPointSize(int(10 * self.scale))
+        self.setFont(base_font)
         self.init_ui()
         self.apply_dialog_theme()
         
     def apply_dialog_theme(self):
         theme = self.theme_manager.get_current_theme()
+        s = self.scale
+        border_width = int(2 * s)
+        radius = int(5 * s)
+        padding = int(10 * s)
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {theme['primary']};
@@ -109,47 +490,52 @@ class SettingsDialog(QDialog):
             }}
             QGroupBox {{
                 font-weight: bold;
-                border: 2px solid {theme['border']};
-                border-radius: 5px;
+                font-size: {int(11 * s)}pt;
+                border: {border_width}px solid {theme['border']};
+                border-radius: {radius}px;
                 margin-top: 1ex;
-                padding-top: 10px;
+                padding-top: {padding}px;
+                padding-bottom: {padding}px;
                 background-color: {theme['secondary']};
                 color: {theme['text_primary']};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
-                left: 10px;
+                left: {int(10 * s)}px;
                 padding: 0 5px 0 5px;
                 color: {theme['accent']};
             }}
             QRadioButton {{
                 color: {theme['text_primary']};
                 background-color: {theme['secondary']};
-                padding: 5px;
-                spacing: 8px;
+                padding: {int(8 * s)}px;
+                spacing: {int(12 * s)}px;
+                font-size: {int(10 * s)}pt;
             }}
             QRadioButton::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid {theme['border']};
+                width: {int(18 * s)}px;
+                height: {int(18 * s)}px;
+                border-radius: {int(9 * s)}px;
+                border: {border_width}px solid {theme['border']};
                 background-color: {theme['primary']};
             }}
             QRadioButton::indicator:checked {{
                 background-color: {theme['accent']};
-                border: 2px solid {theme['accent']};
+                border: {border_width}px solid {theme['accent']};
             }}
             QLabel {{
                 color: {theme['text_primary']};
                 background-color: transparent;
+                font-size: {int(10 * s)}pt;
             }}
             QPushButton {{
                 background-color: {theme['accent']};
                 color: white;
                 border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
+                border-radius: {int(4 * s)}px;
+                padding: {int(10 * s)}px {int(18 * s)}px;
                 font-weight: bold;
+                font-size: {int(10 * s)}pt;
             }}
             QPushButton:hover {{
                 background-color: {theme['accent_hover']};
@@ -161,15 +547,18 @@ class SettingsDialog(QDialog):
         
     def init_ui(self):
         self.setWindowTitle("Configuración de Tema y Colores")
-        self.setFixedSize(500, 450)
+        w = int(600 * self.scale)
+        h = int(600 * self.scale)
+        self.setMinimumSize(w, h) 
+        self.resize(w, h)
         
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(int(25 * self.scale)) 
+        layout.setContentsMargins(int(30 * self.scale), int(30 * self.scale), int(30 * self.scale), int(30 * self.scale))
         
-        # Selección de tema
         theme_group = QGroupBox("Selección de Tema")
         theme_layout = QVBoxLayout(theme_group)
+        theme_layout.setSpacing(int(10 * self.scale)) 
         
         self.theme_buttons = QButtonGroup(self)
         self.dark_radio = QRadioButton("Modo Oscuro")
@@ -192,32 +581,32 @@ class SettingsDialog(QDialog):
         theme_layout.addWidget(self.light_radio)
         theme_layout.addWidget(self.system_radio)
         
-        # Color acento
         color_group = QGroupBox("Color Secundario/Acento")
         color_layout = QVBoxLayout(color_group)
+        color_layout.setSpacing(int(15 * self.scale))
         
         color_preview_layout = QHBoxLayout()
         self.color_preview = QLabel()
-        self.color_preview.setFixedSize(50, 30)
+        self.color_preview.setFixedSize(int(70 * self.scale), int(45 * self.scale))
         self.update_color_preview()
-        
         self.color_name = QLabel(self.theme_manager.custom_accent)
-        self.color_name.setStyleSheet("font-weight: bold;")
-        
+        self.color_name.setStyleSheet(f"font-weight: bold; font-size: {int(12 * self.scale)}pt;")
         self.btn_choose_color = QPushButton("Elegir Color...")
         self.btn_choose_color.clicked.connect(self.choose_accent_color)
+        self.btn_choose_color.setMinimumHeight(int(35 * self.scale))
         
         color_preview_layout.addWidget(self.color_preview)
         color_preview_layout.addWidget(self.color_name)
         color_preview_layout.addWidget(self.btn_choose_color)
         color_preview_layout.addStretch()
         
-        # Colores predefinidos
         predefined_layout = QVBoxLayout()
         predefined_label = QLabel("Colores predefinidos:")
+        predefined_label.setStyleSheet(f"font-size: {int(12 * self.scale)}pt; margin-bottom: 5px;")
         predefined_layout.addWidget(predefined_label)
         
         colors_grid = QGridLayout()
+        colors_grid.setSpacing(int(15 * self.scale))
         colors = [
             ("#007acc", "Azul", 0, 0),
             ("#107c10", "Verde", 0, 1),
@@ -226,11 +615,11 @@ class SettingsDialog(QDialog):
             ("#b4009e", "Morado", 1, 1),
             ("#008272", "Turquesa", 1, 2)
         ]
-        
+        btn_size = int(45 * self.scale)
         for color_code, color_name, row, col in colors:
             btn = QPushButton("")
-            btn.setFixedSize(35, 35)
-            btn.setStyleSheet(f"QPushButton {{ background-color: {color_code}; border: 2px solid {color_code}; border-radius: 17px; }}"
+            btn.setFixedSize(btn_size, btn_size)
+            btn.setStyleSheet(f"QPushButton {{ background-color: {color_code}; border: 2px solid {color_code}; border-radius: 20px; }}"
                             f"QPushButton:hover {{ border: 2px solid #ffffff; }}")
             btn.setToolTip(color_name)
             btn.clicked.connect(lambda checked, c=color_code: self.set_predefined_color(c))
@@ -240,17 +629,17 @@ class SettingsDialog(QDialog):
         color_layout.addLayout(color_preview_layout)
         color_layout.addLayout(predefined_layout)
         
-        # Vista previa
         preview_group = QGroupBox("Vista Previa")
         preview_layout = QVBoxLayout(preview_group)
         
         preview_widget = QWidget()
-        preview_widget.setFixedHeight(80)
+        preview_widget.setFixedHeight(int(100 * self.scale))
         preview_widget.setObjectName("previewWidget")
         
         preview_layout_inner = QHBoxLayout(preview_widget)
         preview_button = QPushButton("Botón de Ejemplo")
         preview_button.setObjectName("previewButton")
+        preview_button.setMinimumHeight(int(30 * self.scale))
         preview_label = QLabel("Texto de ejemplo")
         preview_label.setObjectName("previewLabel")
         
@@ -259,15 +648,22 @@ class SettingsDialog(QDialog):
         preview_layout_inner.addStretch()
         preview_layout.addWidget(preview_widget)
         
-        # Reset
         reset_group = QGroupBox("Restablecer Configuración")
         reset_layout = QHBoxLayout(reset_group)
         self.btn_reset = QPushButton("Restablecer a Valores por Defecto")
         self.btn_reset.clicked.connect(self.reset_to_defaults)
+        self.btn_reset.setMinimumHeight(int(35 * self.scale))
         reset_layout.addWidget(self.btn_reset)
         
-        # Botones
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Apply)
+        button_layout = button_box.layout()
+        for i in range(button_layout.count()):
+             item = button_layout.itemAt(i)
+             if item.widget():
+                 btn = item.widget()
+                 btn.setMinimumHeight(int(35 * self.scale))
+
+        button_box.setCenterButtons(True) 
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         button_box.button(QDialogButtonBox.Apply).clicked.connect(self.apply_changes)
@@ -276,8 +672,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(color_group)
         layout.addWidget(preview_group)
         layout.addWidget(reset_group)
-        layout.addWidget(button_box)
         
+        layout.addStretch(1) 
+        
+        layout.addWidget(button_box)
         self.update_preview()
         
     def update_color_preview(self):
@@ -306,7 +704,7 @@ class SettingsDialog(QDialog):
         
     def update_preview(self):
         theme = self.theme_manager.get_current_theme()
-        
+        s = self.scale
         preview_widget = self.findChild(QWidget, "previewWidget")
         if preview_widget:
             preview_widget.setStyleSheet(f"background-color: {theme['secondary']}; border: 1px solid {theme['border']}; border-radius: 4px;")
@@ -319,8 +717,9 @@ class SettingsDialog(QDialog):
                     color: white;
                     border: none;
                     border-radius: 4px;
-                    padding: 8px 16px;
+                    padding: {int(8*s)}px {int(16*s)}px;
                     font-weight: bold;
+                    font-size: {int(10*s)}pt;
                 }}
                 QPushButton#previewButton:hover {{
                     background-color: {theme['accent_hover']};
@@ -329,7 +728,7 @@ class SettingsDialog(QDialog):
         
         preview_label = self.findChild(QLabel, "previewLabel")
         if preview_label:
-            preview_label.setStyleSheet(f"color: {theme['text_primary']}; font-weight: bold;")
+            preview_label.setStyleSheet(f"color: {theme['text_primary']}; font-weight: bold; font-size: {int(10*s)}pt;")
         
     def get_selected_theme(self):
         if self.dark_radio.isChecked():
@@ -353,7 +752,6 @@ class SettingsDialog(QDialog):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
         if reply == QMessageBox.Yes:
             self.theme_manager.reset_to_defaults()
             self.dark_radio.setChecked(True)
@@ -367,26 +765,32 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
+# ==============================================================================
+# 8. THEME AWARE NAVIGATION TOOLBAR
+# ==============================================================================
 class ThemeAwareNavigationToolbar(NavigationToolbar):
     """Toolbar de matplotlib adaptada al tema"""
     def __init__(self, canvas, parent, theme_manager):
         super().__init__(canvas, parent)
         self.theme_manager = theme_manager
+        self.scale = theme_manager.scale
         self.update_style()
         
     def update_style(self):
         theme = self.theme_manager.get_current_theme()
+        s = self.scale
         self.setStyleSheet(f"""
             QToolButton {{
                 background-color: {theme['secondary']};
-                border: 1px solid {theme['border']};
-                border-radius: 3px;
+                border: {int(1*s)}px solid {theme['border']};
+                border-radius: {int(3*s)}px;
                 color: {theme['text_primary']};
-                padding: 4px;
+                padding: {int(4*s)}px;
+                font-size: {int(9*s)}pt;
             }}
             QToolButton:hover {{
                 background-color: {theme['tertiary']};
-                border: 1px solid {theme['accent']};
+                border: {int(1*s)}px solid {theme['accent']};
             }}
             QToolButton:pressed {{
                 background-color: {theme['accent']};
@@ -394,22 +798,26 @@ class ThemeAwareNavigationToolbar(NavigationToolbar):
         """)
 
 
+# ==============================================================================
+# 9. FILE EXPLORER WIDGET
+# ==============================================================================
 class FileExplorerWidget(QWidget):
-    """Widget del explorador de archivos con tema aplicado"""
+    """Widget del explorador de archivos con tema y escala aplicados"""
     def __init__(self, parent=None, theme_manager=None):
         super().__init__(parent)
         self.parent = parent
         self.theme_manager = theme_manager
+        self.scale = theme_manager.scale
         self.history = []
         self.history_index = -1
         self.init_ui()
         
     def init_ui(self):
+        s = self.scale
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(5)
+        layout.setSpacing(int(5 * s))
         
-        # Barra de herramientas
         toolbar_layout = QHBoxLayout()
         self.btn_back = self.create_tool_button("◀ Atrás", "Volver al directorio anterior")
         self.btn_forward = self.create_tool_button("Adelante ▶", "Avanzar al siguiente directorio")
@@ -424,7 +832,6 @@ class FileExplorerWidget(QWidget):
         toolbar_layout.addWidget(self.btn_refresh)
         toolbar_layout.addStretch()
         
-        # Ruta actual
         path_layout = QHBoxLayout()
         path_label = QLabel("Ruta:")
         self.update_label_style(path_label)
@@ -435,7 +842,7 @@ class FileExplorerWidget(QWidget):
         self.path_edit.returnPressed.connect(self.on_path_edited)
         
         self.btn_go = QPushButton("Ir")
-        self.btn_go.setFixedSize(30, 25)
+        self.btn_go.setFixedSize(int(30 * s), int(25 * s))
         self.update_go_button_style(self.btn_go)
         self.btn_go.clicked.connect(self.on_path_edited)
         
@@ -443,7 +850,6 @@ class FileExplorerWidget(QWidget):
         path_layout.addWidget(self.path_edit)
         path_layout.addWidget(self.btn_go)
         
-        # TreeView
         self.tree_view = QTreeView()
         self.model = QFileSystemModel()
         self.model.setRootPath(QDir.rootPath())
@@ -453,7 +859,7 @@ class FileExplorerWidget(QWidget):
         self.tree_view.setModel(self.model)
         self.tree_view.setRootIndex(self.model.index(QDir.currentPath()))
         self.tree_view.setAnimated(False)
-        self.tree_view.setIndentation(20)
+        self.tree_view.setIndentation(int(20 * s))
         self.tree_view.setSortingEnabled(True)
         self.tree_view.hideColumn(1)
         self.tree_view.hideColumn(2)
@@ -461,7 +867,6 @@ class FileExplorerWidget(QWidget):
         
         self.update_treeview_style()
         
-        # Conexiones
         self.tree_view.doubleClicked.connect(self.on_file_double_clicked)
         self.tree_view.clicked.connect(self.on_tree_selection_changed)
         self.btn_back.clicked.connect(self.go_back)
@@ -477,39 +882,40 @@ class FileExplorerWidget(QWidget):
         layout.addWidget(self.tree_view)
     
     def create_tool_button(self, text, tooltip):
+        s = self.scale
         btn = QPushButton(text)
         btn.setToolTip(tooltip)
-        btn.setFixedHeight(28)
+        btn.setFixedHeight(int(28 * s))
         self.update_button_style(btn)
         return btn
     
     def update_style(self):
-        self.update_button_style(self.btn_back)
-        self.update_button_style(self.btn_forward)
-        self.update_button_style(self.btn_up)
-        self.update_button_style(self.btn_home)
-        self.update_button_style(self.btn_refresh)
+        for btn in [self.btn_back, self.btn_forward, self.btn_up, self.btn_home, self.btn_refresh]:
+            self.update_button_style(btn)
         self.update_go_button_style(self.btn_go)
         self.update_lineedit_style(self.path_edit)
         self.update_treeview_style()
-        
+        for label in self.findChildren(QLabel):
+            self.update_label_style(label)
+
     def update_button_style(self, button):
+        s = self.scale
         if self.theme_manager:
             theme = self.theme_manager.get_current_theme()
             button.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {theme['secondary']};
-                    border: 1px solid {theme['border']};
-                    border-radius: 3px;
+                    border: {int(1*s)}px solid {theme['border']};
+                    border-radius: {int(3*s)}px;
                     color: {theme['text_primary']};
                     font-weight: bold;
-                    font-size: 11px;
-                    padding: 4px 8px;
-                    min-width: 60px;
+                    font-size: {int(11*s)}pt;
+                    padding: {int(4*s)}px {int(8*s)}px;
+                    min-width: {int(60*s)}px;
                 }}
                 QPushButton:hover {{
                     background-color: {theme['tertiary']};
-                    border: 1px solid {theme['accent']};
+                    border: {int(1*s)}px solid {theme['accent']};
                 }}
                 QPushButton:pressed {{
                     background-color: {theme['accent']};
@@ -517,44 +923,48 @@ class FileExplorerWidget(QWidget):
                 QPushButton:disabled {{
                     background-color: {theme['primary']};
                     color: {theme['text_muted']};
-                    border: 1px solid {theme['border']};
+                    border: {int(1*s)}px solid {theme['border']};
                 }}
             """)
             
     def update_label_style(self, label):
+        s = self.scale
         if self.theme_manager:
             theme = self.theme_manager.get_current_theme()
-            label.setStyleSheet(f"color: {theme['text_secondary']};")
+            label.setStyleSheet(f"color: {theme['text_secondary']}; font-size: {int(10*s)}pt;")
             
     def update_lineedit_style(self, line_edit):
+        s = self.scale
         if self.theme_manager:
             theme = self.theme_manager.get_current_theme()
             line_edit.setStyleSheet(f"""
                 QLineEdit {{
                     background-color: {theme['primary']};
-                    border: 1px solid {theme['border']};
-                    border-radius: 3px;
-                    padding: 4px 8px;
+                    border: {int(1*s)}px solid {theme['border']};
+                    border-radius: {int(3*s)}px;
+                    padding: {int(4*s)}px {int(8*s)}px;
                     color: {theme['text_secondary']};
                     font-family: 'Consolas', 'Monaco', monospace;
-                    font-size: 10px;
+                    font-size: {int(10*s)}pt;
                     selection-background-color: {theme['accent']};
                 }}
                 QLineEdit:focus {{
-                    border: 1px solid {theme['accent']};
+                    border: {int(1*s)}px solid {theme['accent']};
                 }}
             """)
             
     def update_go_button_style(self, button):
+        s = self.scale
         if self.theme_manager:
             theme = self.theme_manager.get_current_theme()
             button.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {theme['accent']};
-                    border: 1px solid {theme['accent']};
-                    border-radius: 3px;
+                    border: {int(1*s)}px solid {theme['accent']};
+                    border-radius: {int(3*s)}px;
                     color: #ffffff;
                     font-weight: bold;
+                    font-size: {int(9*s)}pt;
                 }}
                 QPushButton:hover {{
                     background-color: {theme['accent_hover']};
@@ -565,18 +975,20 @@ class FileExplorerWidget(QWidget):
             """)
             
     def update_treeview_style(self):
+        s = self.scale
         if self.theme_manager:
             theme = self.theme_manager.get_current_theme()
             self.tree_view.setStyleSheet(f"""
                 QTreeView {{
                     background-color: {theme['primary']};
-                    border: 1px solid {theme['border']};
-                    border-radius: 4px;
+                    border: {int(1*s)}px solid {theme['border']};
+                    border-radius: {int(4*s)}px;
                     color: {theme['text_secondary']};
                     outline: none;
+                    font-size: {int(10*s)}pt;
                 }}
                 QTreeView::item {{
-                    padding: 4px;
+                    padding: {int(4*s)}px;
                     border: none;
                 }}
                 QTreeView::item:selected {{
@@ -590,7 +1002,6 @@ class FileExplorerWidget(QWidget):
         
     def on_path_edited(self):
         path = self.path_edit.text().strip().replace('\\', '/')
-        
         if os.path.exists(path):
             if os.path.isdir(path):
                 self.set_path(path)
@@ -656,25 +1067,30 @@ class FileExplorerWidget(QWidget):
         
     def on_file_double_clicked(self, index):
         path = self.model.filePath(index)
-        if os.path.isfile(path) and path.lower().endswith(('.fits', '.fit')):
+        if os.path.isfile(path) and path.lower().endswith(('.fits', '.fit', '.txt', '.csv')):
             if self.parent:
                 self.parent.load_fits_file(path)
         elif os.path.isdir(path):
             self.set_path(path)
 
 
+# ==============================================================================
+# 10. PARAMETERS PANEL
+# ==============================================================================
 class ParametersPanel(QWidget):
-    """Panel de parámetros con tema aplicado"""
+    """Panel de parámetros optimizado con StyleEngine"""
     def __init__(self, parent=None, theme_manager=None):
         super().__init__(parent)
         self.parent = parent
         self.theme_manager = theme_manager
+        self.scale = theme_manager.scale
         self.current_params = DEFAULT_PARAMS.copy()
         self.init_ui()
         
     def init_ui(self):
+        s = self.scale
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(int(10 * s))
         main_layout.setContentsMargins(5, 5, 5, 5)
         
         scroll_area = QScrollArea()
@@ -686,15 +1102,14 @@ class ParametersPanel(QWidget):
         scroll_widget = QWidget()
         self.update_widget_style(scroll_widget)
         scroll_layout = QVBoxLayout(scroll_widget)
-        scroll_layout.setSpacing(10)
+        scroll_layout.setSpacing(int(10 * s))
         scroll_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Parámetros de procesamiento
         params_group = QGroupBox("Parámetros de Procesamiento")
         self.update_groupbox_style(params_group)
         params_layout = QGridLayout(params_group)
-        params_layout.setVerticalSpacing(8)
-        params_layout.setHorizontalSpacing(10)
+        params_layout.setVerticalSpacing(int(8 * s))
+        params_layout.setHorizontalSpacing(int(10 * s))
         
         param_options = {
             "REBIN_FACTOR": ["2", "4", "6", "8", "10"],
@@ -717,7 +1132,7 @@ class ParametersPanel(QWidget):
             
             combo = QComboBox()
             combo.setToolTip(f"Seleccione un valor para {key}")
-            combo.setMinimumHeight(25)
+            combo.setMinimumHeight(int(25 * s))
             self.update_combobox_style(combo)
             
             if key in param_options:
@@ -742,7 +1157,6 @@ class ParametersPanel(QWidget):
         
         params_layout.setColumnStretch(1, 1)
         
-        # Líneas espectrales
         lines_group = QGroupBox("Líneas Espectrales de Referencia")
         self.update_groupbox_style(lines_group)
         lines_layout = QVBoxLayout(lines_group)
@@ -752,7 +1166,7 @@ class ParametersPanel(QWidget):
         self.lines_table.setHorizontalHeaderLabels(["Línea", "Longitud de Onda (Å)"])
         self.lines_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.lines_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.lines_table.setMaximumHeight(150)
+        self.lines_table.setMaximumHeight(int(150 * s))
         
         self.update_table_style(self.lines_table)
         self.update_spectral_lines_table()
@@ -767,146 +1181,44 @@ class ParametersPanel(QWidget):
         main_layout.addWidget(scroll_area)
     
     def update_style(self):
+        theme = self.theme_manager.get_current_theme()
+        s = self.scale
         self.update_scrollarea_style(self.findChild(QScrollArea))
-        
-    def update_scrollarea_style(self, scroll_area):
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            scroll_area.setStyleSheet(f"""
-                QScrollArea {{
-                    background-color: {theme['secondary']};
-                    border: none;
-                }}
-                QScrollArea > QWidget > QWidget {{
-                    background-color: {theme['secondary']};
-                }}
-                QScrollBar:vertical {{
-                    background-color: {theme['secondary']};
-                    width: 15px;
-                    margin: 0px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background-color: {theme['accent']};
-                    border-radius: 7px;
-                    min-height: 20px;
-                }}
-                QScrollBar::handle:vertical:hover {{
-                    background-color: {theme['accent_hover']};
-                }}
-                QScrollBar:horizontal {{
-                    background-color: {theme['secondary']};
-                    height: 15px;
-                    margin: 0px;
-                }}
-                QScrollBar::handle:horizontal {{
-                    background-color: {theme['accent']};
-                    border-radius: 7px;
-                    min-width: 20px;
-                }}
-                QScrollBar::handle:horizontal:hover {{
-                    background-color: {theme['accent_hover']};
-                }}
-            """)
-            
+        for group in self.findChildren(QGroupBox):
+            group.setStyleSheet(StyleEngine.get_groupbox_style(theme, s))
+        for label in self.findChildren(QLabel):
+            label.setStyleSheet(StyleEngine.get_label_style(theme, s))
+        for combo in self.findChildren(QComboBox):
+            combo.setStyleSheet(StyleEngine.get_combobox_style(theme, s))
+        self.update_table_style(self.lines_table)
+
     def update_widget_style(self, widget):
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            widget.setStyleSheet(f"background-color: {theme['secondary']};")
-            
+        theme = self.theme_manager.get_current_theme()
+        widget.setStyleSheet(f"background-color: {theme['secondary']};")
+
     def update_groupbox_style(self, groupbox):
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            groupbox.setStyleSheet(f"""
-                QGroupBox {{
-                    font-weight: bold;
-                    border: 2px solid {theme['border']};
-                    border-radius: 5px;
-                    margin-top: 1ex;
-                    padding-top: 10px;
-                    background-color: {theme['secondary']};
-                    color: {theme['text_primary']};
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 5px 0 5px;
-                    color: {theme['accent']};
-                }}
-            """)
-            
+        theme = self.theme_manager.get_current_theme()
+        groupbox.setStyleSheet(StyleEngine.get_groupbox_style(theme, self.scale))
+
     def update_label_style(self, label):
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            label.setStyleSheet(f"color: {theme['text_secondary']}; font-weight: bold;")
-            
+        theme = self.theme_manager.get_current_theme()
+        label.setStyleSheet(StyleEngine.get_label_style(theme, self.scale))
+
     def update_combobox_style(self, combobox):
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            combobox.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: {theme['secondary']};
-                    border: 1px solid {theme['border']};
-                    border-radius: 3px;
-                    padding: 4px;
-                    color: {theme['text_secondary']};
-                    min-width: 80px;
-                }}
-                QComboBox:focus {{
-                    border: 1px solid {theme['accent']};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 20px;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    border-left: 5px solid transparent;
-                    border-right: 5px solid transparent;
-                    border-top: 5px solid {theme['text_secondary']};
-                    width: 0px;
-                    height: 0px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: {theme['secondary']};
-                    border: 1px solid {theme['border']};
-                    color: {theme['text_secondary']};
-                    selection-background-color: {theme['accent']};
-                }}
-            """)
-            
+        theme = self.theme_manager.get_current_theme()
+        combobox.setStyleSheet(StyleEngine.get_combobox_style(theme, self.scale))
+
     def update_table_style(self, table):
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            table.setStyleSheet(f"""
-                QTableWidget {{
-                    background-color: {theme['primary']};
-                    border: 1px solid {theme['border']};
-                    border-radius: 4px;
-                    color: {theme['text_secondary']};
-                    gridline-color: {theme['border']};
-                }}
-                QTableWidget::item {{
-                    padding: 6px;
-                    border-bottom: 1px solid {theme['border']};
-                }}
-                QTableWidget::item:selected {{
-                    background-color: {theme['accent']};
-                    color: #ffffff;
-                }}
-                QHeaderView::section {{
-                    background-color: {theme['secondary']};
-                    color: {theme['accent']};
-                    font-weight: bold;
-                    padding: 6px;
-                    border: none;
-                    border-bottom: 2px solid {theme['accent']};
-                }}
-            """)
+        theme = self.theme_manager.get_current_theme()
+        table.setStyleSheet(StyleEngine.get_table_style(theme, self.scale))
+
+    def update_scrollarea_style(self, scroll_area):
+        theme = self.theme_manager.get_current_theme()
+        scroll_area.setStyleSheet(StyleEngine.get_scrollarea_style(theme, self.scale))
         
     def on_parameter_changed(self, param_name, new_value):
         try:
             original_value = self.current_params[param_name]
-            
             if isinstance(original_value, bool):
                 self.current_params[param_name] = (new_value == "True")
             elif isinstance(original_value, int):
@@ -915,64 +1227,69 @@ class ParametersPanel(QWidget):
                 self.current_params[param_name] = float(new_value)
             else:
                 self.current_params[param_name] = new_value
-            
             if self.parent:
                 self.parent.current_params = self.current_params.copy()
-                
         except ValueError as e:
             print(f"Error al convertir valor para {param_name}: {e}")
-            
+
     def update_spectral_lines_table(self):
         lines = SPECTRAL_LINES
         self.lines_table.setRowCount(len(lines))
-        
         for i, (key, value) in enumerate(lines.items()):
             self.lines_table.setItem(i, 0, QTableWidgetItem(key))
             self.lines_table.setItem(i, 1, QTableWidgetItem(str(value)))
 
 
+# ==============================================================================
+# 11. MPL CANVAS
+# ==============================================================================
 class MplCanvas(FigureCanvas):
-    """Widget de matplotlib con tema aplicado"""
+    """Widget de matplotlib con tema y escala aplicada"""
     def __init__(self, parent=None, width=8, height=6, dpi=100, theme_manager=None):
         self.theme_manager = theme_manager
-        
+        self.scale = theme_manager.scale
         if theme_manager and theme_manager.current_theme_name == "light":
             plt.style.use('default')
         else:
             plt.style.use('dark_background')
-            
         self.fig, self.ax = plt.subplots(1, 1, figsize=(width, height), dpi=dpi)
         self.update_plot_theme()
-            
         super(MplCanvas, self).__init__(self.fig)
         self.setParent(parent)
         
     def update_plot_theme(self):
         if self.theme_manager:
             theme = self.theme_manager.get_current_theme()
-            
+            s = self.scale
             self.fig.patch.set_facecolor(theme['primary'])
             self.ax.set_facecolor(theme['secondary'])
-            self.ax.tick_params(colors=theme['text_secondary'])
-            
+            fontsize_labels = int(10 * s)
+            fontsize_title = int(12 * s)
+            fontsize_ticks = int(8 * s)
+            self.ax.tick_params(colors=theme['text_secondary'], labelsize=fontsize_ticks)
             for spine in self.ax.spines.values():
                 spine.set_color(theme['border'])
-                
             self.ax.title.set_color(theme['text_primary'])
+            self.ax.title.set_fontsize(fontsize_title)
             self.ax.xaxis.label.set_color(theme['text_secondary'])
             self.ax.yaxis.label.set_color(theme['text_secondary'])
+            self.ax.xaxis.label.set_fontsize(fontsize_labels)
+            self.ax.yaxis.label.set_fontsize(fontsize_labels)
+            legend = self.ax.get_legend()
+            if legend:
+                for text in legend.get_texts():
+                    text.set_fontsize(fontsize_ticks)
             self.ax.grid(True, alpha=0.2, color=theme['border'])
 
 
+# ==============================================================================
+# 12. MAIN WINDOW
+# ==============================================================================
 class MainWindow(QMainWindow):
     """Ventana principal de la aplicación"""
-    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LAMOST Spectrum Analyzer")
-        self.setGeometry(100, 100, 1600, 900)
-        
-        # Inicializar componentes
         self.theme_manager = ThemeManager()
         self.file_path = None
         self.wl = None
@@ -980,17 +1297,30 @@ class MainWindow(QMainWindow):
         self.ivar = None
         self.report = None
         self.current_params = DEFAULT_PARAMS.copy()
-        
-        # Configurar interfaz - PRIMERO inicializar UI, LUEGO aplicar tema
+        self.source_type = "LAMOST"
+        self.scale = self.theme_manager.scale
+
+        # --- INICIALIZACIÓN DEL LOGGER ---
+        self.logger = LoggerWidget(self.theme_manager, self.scale)
+        sys.stdout = StreamToLogger(self.logger)
+        sys.stderr = StreamToLogger(self.logger)
+        print("Sistema iniciado correctamente.")
+        # ------------------------------------------
+
+        base_font = self.font()
+        base_font.setPointSize(int(9 * self.scale))
+        self.setFont(base_font)
         self.init_ui()
-        self.create_menu()
-        self.apply_theme()  # Ahora se llama después de init_ui()
+        
+        # --- MENU MANAGER ---
+        self.menu_manager = MenuManager(self, self.menuBar())
+        self.menu_manager.build_menus()
+        # -------------------
+        
+        self.apply_theme()
         
     def apply_theme(self):
-        """Aplica el tema actual a toda la aplicación"""
         theme = self.theme_manager.get_current_theme()
-        
-        # Configurar paleta
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(theme['primary']))
         palette.setColor(QPalette.WindowText, QColor(theme['text_primary']))
@@ -1005,11 +1335,8 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.Link, QColor(theme['accent']))
         palette.setColor(QPalette.Highlight, QColor(theme['accent']))
         palette.setColor(QPalette.HighlightedText, QColor(theme['secondary']))
-        
         self.setPalette(palette)
         self.setStyleSheet(self.get_main_stylesheet())
-        
-        # Actualizar componentes - ahora existen porque init_ui() ya se llamó
         if hasattr(self, 'file_explorer'):
             self.file_explorer.update_style()
         if hasattr(self, 'parameters_panel'):
@@ -1019,14 +1346,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'canvas'):
             self.canvas.update_plot_theme()
             self.canvas.draw()
-        
         self.update_file_label_style()
         self.update()
         QApplication.processEvents()
         
     def get_main_stylesheet(self):
         theme = self.theme_manager.get_current_theme()
-        
+        s = self.scale
         return f"""
             QMainWindow {{
                 background-color: {theme['primary']};
@@ -1034,15 +1360,16 @@ class MainWindow(QMainWindow):
             }}
             QGroupBox {{
                 font-weight: bold;
-                border: 2px solid {theme['border']};
-                border-radius: 5px;
+                border: {int(2 * s)}px solid {theme['border']};
+                border-radius: {int(5 * s)}px;
                 margin-top: 1ex;
-                padding-top: 10px;
+                padding-top: {int(10 * s)}px;
                 background-color: {theme['secondary']};
+                color: {theme['text_primary']};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
-                left: 10px;
+                left: {int(10 * s)}px;
                 padding: 0 5px 0 5px;
                 color: {theme['accent']};
             }}
@@ -1050,10 +1377,10 @@ class MainWindow(QMainWindow):
                 background-color: {theme['accent']};
                 color: white;
                 border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
+                border-radius: {int(4 * s)}px;
+                padding: {int(8 * s)}px {int(16 * s)}px;
                 font-weight: bold;
-                min-height: 20px;
+                min-height: {int(20 * s)}px;
             }}
             QPushButton:hover {{
                 background-color: {theme['accent_hover']};
@@ -1067,35 +1394,35 @@ class MainWindow(QMainWindow):
             }}
             QLabel {{
                 color: {theme['text_secondary']};
-                padding: 4px;
+                padding: {int(4 * s)}px;
             }}
             QProgressBar {{
-                border: 1px solid {theme['border']};
-                border-radius: 4px;
+                border: {int(1 * s)}px solid {theme['border']};
+                border-radius: {int(4 * s)}px;
                 text-align: center;
                 color: {theme['text_primary']};
                 background-color: {theme['secondary']};
             }}
             QProgressBar::chunk {{
                 background-color: {theme['accent']};
-                border-radius: 3px;
+                border-radius: {int(3 * s)}px;
             }}
             QTextEdit {{
                 background-color: {theme['primary']};
                 color: {theme['text_secondary']};
-                border: 1px solid {theme['border']};
-                border-radius: 4px;
-                padding: 8px;
+                border: {int(1 * s)}px solid {theme['border']};
+                border-radius: {int(4 * s)}px;
+                padding: {int(8 * s)}px;
                 font-family: 'Consolas', 'Monaco', monospace;
             }}
             QMenuBar {{
                 background-color: {theme['secondary']};
                 color: {theme['text_primary']};
-                border-bottom: 1px solid {theme['border']};
+                border-bottom: {int(1 * s)}px solid {theme['border']};
             }}
             QMenuBar::item {{
                 background-color: transparent;
-                padding: 4px 8px;
+                padding: {int(4 * s)}px {int(8 * s)}px;
             }}
             QMenuBar::item:selected {{
                 background-color: {theme['tertiary']};
@@ -1103,126 +1430,54 @@ class MainWindow(QMainWindow):
             QMenu {{
                 background-color: {theme['secondary']};
                 color: {theme['text_primary']};
-                border: 1px solid {theme['border']};
+                border: {int(1 * s)}px solid {theme['border']};
             }}
             QMenu::item {{
-                padding: 4px 16px;
+                padding: {int(4 * s)}px {int(16 * s)}px;
             }}
             QMenu::item:selected {{
                 background-color: {theme['accent']};
             }}
         """
         
-    def create_menu(self):
-        menubar = self.menuBar()
-
-        # Menú File
-        file_menu = menubar.addMenu("File")
-        open_action = QAction("Open FITS", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.open_file)
-        file_menu.addAction(open_action)
-
-        save_action = QAction("Save Results", self)
-        save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(self.save_results)
-        file_menu.addAction(save_action)
-        
-        file_menu.addSeparator()
-        exit_action = QAction("Exit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        # Menú Edit
-        edit_menu = menubar.addMenu("Edit")
-        copy_action = QAction("Copy Results", self)
-        copy_action.setShortcut("Ctrl+C")
-        copy_action.triggered.connect(self.copy_results)
-        edit_menu.addAction(copy_action)
-        
-        clear_action = QAction("Clear Results", self)
-        clear_action.setShortcut("Ctrl+L")
-        clear_action.triggered.connect(self.clear_results)
-        edit_menu.addAction(clear_action)
-
-        # Menú View
-        view_menu = menubar.addMenu("View")
-        reset_plot_action = QAction("Reset Plot", self)
-        reset_plot_action.setShortcut("Ctrl+R")
-        reset_plot_action.triggered.connect(self.reset_plot)
-        view_menu.addAction(reset_plot_action)
-        
-        toggle_toolbar_action = QAction("Toggle Toolbar", self)
-        toggle_toolbar_action.setShortcut("Ctrl+T")
-        toggle_toolbar_action.triggered.connect(self.toggle_toolbar)
-        view_menu.addAction(toggle_toolbar_action)
-        
-        view_menu.addSeparator()
-        fullscreen_action = QAction("Fullscreen", self)
-        fullscreen_action.setShortcut("F11")
-        fullscreen_action.triggered.connect(self.toggle_fullscreen)
-        view_menu.addAction(fullscreen_action)
-
-        # Menú Tools
-        tools_menu = menubar.addMenu("Tools")
-        analyze_action = QAction("Run Analysis", self)
-        analyze_action.setShortcut("F5")
-        analyze_action.triggered.connect(self.analyze)
-        tools_menu.addAction(analyze_action)
-        
-        tools_menu.addSeparator()
-        settings_action = QAction("Theme Settings", self)
-        settings_action.setShortcut("Ctrl+,")
-        settings_action.triggered.connect(self.show_theme_settings)
-        tools_menu.addAction(settings_action)
-        
-        batch_action = QAction("Batch Processing", self)
-        batch_action.triggered.connect(self.batch_processing)
-        tools_menu.addAction(batch_action)
-
-        # Menú Help
-        help_menu = menubar.addMenu("Help")
-        docs_action = QAction("Documentation", self)
-        docs_action.setShortcut("F1")
-        docs_action.triggered.connect(self.show_documentation)
-        help_menu.addAction(docs_action)
-        
-        help_menu.addSeparator()
-        about_action = QAction("About", self)
-        about_action.triggered.connect(self.show_about)
-        help_menu.addAction(about_action)
-
     def init_ui(self):
+        s = self.scale
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
         main_layout = QHBoxLayout(central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        
+        main_layout.setSpacing(int(10 * s))
+        main_layout.setContentsMargins(int(10 * s), int(10 * s), int(10 * s), int(10 * s))
         splitter = QSplitter(Qt.Horizontal)
         
         # Panel izquierdo
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_panel.setMinimumWidth(350)
-        left_panel.setMaximumWidth(450)
+        left_panel.setMinimumWidth(int(350 * s))
+        left_panel.setMaximumWidth(int(450 * s))
         
-        # Explorador de archivos
         explorer_group = QGroupBox("Project Explorer")
         explorer_layout = QVBoxLayout(explorer_group)
         self.file_explorer = FileExplorerWidget(self, self.theme_manager)
         explorer_layout.addWidget(self.file_explorer)
         
-        # Información de archivo
         file_info_group = QGroupBox("File Information")
         file_info_layout = QVBoxLayout(file_info_group)
         self.file_label = QLabel("No hay archivo seleccionado")
         self.file_label.setWordWrap(True)
         file_info_layout.addWidget(self.file_label)
         
-        # Análisis
+        src_layout = QHBoxLayout()
+        src_label = QLabel("Modo Fuente:")
+        self.update_label_style(src_label)
+        src_layout.addWidget(src_label)
+        
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["LAMOST", "UNIVERSAL (FITS/TXT)"])
+        self.source_combo.currentTextChanged.connect(self.set_source_type)
+        self.update_combobox_style(self.source_combo)
+        src_layout.addWidget(self.source_combo)
+        file_info_layout.addLayout(src_layout)
+        
         analysis_group = QGroupBox("Análisis")
         analysis_layout = QVBoxLayout(analysis_group)
         self.btn_analyze = QPushButton("Ejecutar análisis")
@@ -1249,7 +1504,7 @@ class MainWindow(QMainWindow):
         # Panel central
         center_panel = QWidget()
         center_layout = QVBoxLayout(center_panel)
-        center_layout.setSpacing(5)
+        center_layout.setSpacing(int(5 * s))
         
         self.canvas = MplCanvas(self, width=10, height=6, dpi=100, theme_manager=self.theme_manager)
         self.toolbar = ThemeAwareNavigationToolbar(self.canvas, self, self.theme_manager)
@@ -1262,50 +1517,101 @@ class MainWindow(QMainWindow):
         
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
-        self.results_text.setMaximumHeight(200)
+        self.results_text.setMaximumHeight(int(200 * s))
         center_layout.addWidget(self.results_text)
         
-        # Panel derecho
+        # --- AÑADIR TERMINAL AQUÍ ---
+        self.logger.setMaximumHeight(int(150 * s))
+        self.logger.apply_style()
+        center_layout.addWidget(self.logger)
+        # -------------------------
+        
         right_panel = QWidget()
-        right_panel.setMinimumWidth(300)
-        right_panel.setMaximumWidth(500)
+        right_panel.setMinimumWidth(int(300 * s))
+        right_panel.setMaximumWidth(int(500 * s))
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         
         self.parameters_panel = ParametersPanel(self, self.theme_manager)
         right_layout.addWidget(self.parameters_panel)
         
-        # Ensamblar interfaz
         splitter.addWidget(left_panel)
         splitter.addWidget(center_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([400, 800, 400])
+        splitter.setSizes([int(400*self.scale), int(800*self.scale), int(400*self.scale)])
         
         main_layout.addWidget(splitter)
+
+    def set_source_type(self, text):
+        self.source_type = text.split(" ")[0]
         
     def update_file_label_style(self):
-        """Actualiza el estilo de la etiqueta de información de archivo"""
         theme = self.theme_manager.get_current_theme()
+        s = self.scale
         if self.file_path:
             self.file_label.setStyleSheet(f"""
                 QLabel {{
                     background-color: {theme['primary']};
-                    border: 1px solid {theme['accent']};
-                    border-radius: 4px;
-                    padding: 8px;
+                    border: {int(1*s)}px solid {theme['accent']};
+                    border-radius: {int(4*s)}px;
+                    padding: {int(8*s)}px;
                     color: {theme['text_primary']};
-                    min-height: 60px;
+                    min-height: {int(60*s)}px;
                 }}
             """)
         else:
             self.file_label.setStyleSheet(f"""
                 QLabel {{
                     background-color: {theme['primary']};
-                    border: 1px solid {theme['border']};
-                    border-radius: 4px;
-                    padding: 8px;
+                    border: {int(1*s)}px solid {theme['border']};
+                    border-radius: {int(4*s)}px;
+                    padding: {int(8*s)}px;
                     color: {theme['text_muted']};
-                    min-height: 60px;
+                    min-height: {int(60*s)}px;
+                }}
+            """)
+            
+    def update_label_style(self, label):
+        s = self.scale
+        if self.theme_manager:
+            theme = self.theme_manager.get_current_theme()
+            label.setStyleSheet(f"color: {theme['text_secondary']}; font-size: {int(10*s)}pt;")
+
+    def update_combobox_style(self, combobox):
+        s = self.scale
+        if self.theme_manager:
+            theme = self.theme_manager.get_current_theme()
+            combobox.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: {theme['secondary']};
+                    border: {int(1*s)}px solid {theme['border']};
+                    border-radius: {int(3*s)}px;
+                    padding: {int(4*s)}px;
+                    color: {theme['text_secondary']};
+                    min-width: {int(80*s)}px;
+                    font-size: {int(9*s)}pt;
+                }}
+                QComboBox:focus {{
+                    border: {int(1*s)}px solid {theme['accent']};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: {int(20*s)}px;
+                }}
+                QComboBox::down-arrow {{
+                    image: none;
+                    border-left: {int(5*s)}px solid transparent;
+                    border-right: {int(5*s)}px solid transparent;
+                    border-top: {int(5*s)}px solid {theme['text_secondary']};
+                    width: 0px;
+                    height: 0px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {theme['secondary']};
+                    border: {int(1*s)}px solid {theme['border']};
+                    color: {theme['text_secondary']};
+                    selection-background-color: {theme['accent']};
+                    font-size: {int(9*s)}pt;
                 }}
             """)
         
@@ -1318,34 +1624,59 @@ class MainWindow(QMainWindow):
         self.results_text.append(f"✓ Archivo cargado: {filename}")
         
     def open_file(self):
+        if self.source_type == "UNIVERSAL":
+            file_filter = "Todos los archivos (*.fits *.fit *.txt *.csv)"
+        else:
+            file_filter = "FITS Files (*.fits *.fit)"
+
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar archivo FITS", "", "FITS Files (*.fits *.fit)"
+            self, "Seleccionar archivo", "", file_filter
         )
         if file_path:
             self.load_fits_file(file_path)
             
     def analyze(self):
         if not self.file_path:
-            QMessageBox.warning(self, "Advertencia", "Seleccione un archivo FITS primero.")
+            QMessageBox.warning(self, "Advertencia", "Seleccione un archivo primero.")
             return
             
         try:
             self.progress_bar.setValue(10)
             QApplication.processEvents()
             
-            self.wl, self.flux, self.ivar = read_fits_file(self.file_path)
-            self.progress_bar.setValue(30)
-            
             params = self.current_params
             lines_dict = SPECTRAL_LINES
             
-            m = valid_mask(self.flux, self.ivar)
-            self.wl, self.flux, self.ivar = self.wl[m], self.flux[m], self.ivar[m]
+            # --- LÓGICA MODIFICADA PARA SOPORTAR UNIVERSAL ---
+            if self.source_type == "LAMOST":
+                # CÓDIGO ORIGINAL LAMOST
+                self.wl, self.flux, self.ivar = read_fits_file(self.file_path)
+                self.progress_bar.setValue(30)
+                
+                m = valid_mask(self.flux, self.ivar)
+                self.wl, self.flux, self.ivar = self.wl[m], self.flux[m], self.ivar[m]
 
-            wl_r, flux_r, ivar_r = rebin_spectrum(self.wl, self.flux, self.ivar, factor=params["REBIN_FACTOR"])
-            if len(flux_r) == 0:
-                QMessageBox.critical(self, "Error", "Array vacío tras rebinado.")
-                return
+                wl_r, flux_r, ivar_r = rebin_spectrum(self.wl, self.flux, self.ivar, factor=params["REBIN_FACTOR"])
+                if len(flux_r) == 0:
+                    QMessageBox.critical(self, "Error", "Array vacío tras rebinado.")
+                    return
+            
+            else:
+                # NUEVO CÓDIGO UNIVERSAL
+                print("Usando cargador universal en GUI...")
+                wl, flux = load_spectrum_universal(self.file_path)
+                
+                if wl is None:
+                    QMessageBox.critical(self, "Error", "No se pudo leer el archivo en modo Universal.")
+                    return
+                
+                self.wl, self.flux = wl, flux
+                # Simulamos ivar (inverso de varianza) para que los filtros posteriores no rompan
+                self.ivar = np.ones_like(flux) * 100.0 
+                
+                # Para datos universales, asumimos que ya vienen bien calibrados y saltamos el rebinado
+                wl_r, flux_r, ivar_r = self.wl, self.flux, self.ivar
+            # ----------------------------------------------
 
             current_sg_window = params["SG_WINDOW"]
             if params["SG_WINDOW"] > len(flux_r):
@@ -1371,6 +1702,8 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error durante el análisis: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
     def display_results(self):
         if not self.report:
@@ -1394,6 +1727,11 @@ class MainWindow(QMainWindow):
         self.canvas.ax.plot(wavelengths, flux_original, color=theme['text_muted'], alpha=0.6, linewidth=0.5, label="Original")
         self.canvas.ax.plot(wavelengths, flux_processed, color=theme['accent'], linewidth=1, label="Procesado")
         
+        for name, wl_line in lines_dict.items():
+            if wavelengths.min() <= wl_line <= wavelengths.max():
+                self.canvas.ax.axvline(wl_line, color=theme['warning'], linestyle='--', alpha=0.7)
+                self.canvas.ax.text(wl_line, max(flux_original)*0.9, name, rotation=90, color=theme['text_secondary'], fontsize=8)
+        
         self.canvas.ax.legend(facecolor=theme['secondary'], edgecolor=theme['border'], labelcolor=theme['text_secondary'])
         self.canvas.ax.set_title("Espectro completo", color=theme['text_primary'])
         self.canvas.ax.set_xlabel("Longitud de onda (Å)", color=theme['text_secondary'])
@@ -1416,6 +1754,7 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'w') as f:
                     f.write("=== REPORTE DE ANÁLISIS ESPECTRAL LAMOST ===\n\n")
                     f.write(f"Archivo analizado: {os.path.basename(self.file_path)}\n")
+                    f.write(f"Modo Fuente: {self.source_type}\n")
                     f.write(f"Rango λ: {self.report['wavelength_range']['min']:.1f} - {self.report['wavelength_range']['max']:.1f} Å\n")
                     f.write(f"SNR: {self.report['snr']:.1f}\n")
                     if 'redshift' in self.report:
@@ -1452,6 +1791,15 @@ class MainWindow(QMainWindow):
         else:
             self.showFullScreen()
 
+    def toggle_terminal(self):
+        if self.logger.isVisible():
+            self.logger.hide()
+        else:
+            self.logger.show()
+            
+    def clear_log(self):
+        self.logger.clear()
+
     def show_theme_settings(self):
         dialog = SettingsDialog(self.theme_manager, self)
         dialog.exec_()
@@ -1465,12 +1813,14 @@ class MainWindow(QMainWindow):
         <p><b>Funcionalidades:</b></p>
         <ul>
             <li>Carga de archivos FITS</li>
+            <li><b>MODO UNIVERSAL:</b> Soporte para archivos FITS genéricos y TXT de aficionados.</li>
             <li>Análisis espectral automático</li>
             <li>Detección de líneas espectrales</li>
             <li>Cálculo de redshift y velocidad radial</li>
             <li>Visualización interactiva</li>
             <li>Temas personalizables (oscuro, claro, sistema)</li>
             <li>Colores secundarios configurables</li>
+            <li><b>Escalado automático:</b> Interfaz y gráficos se ajustan a tu pantalla.</li>
         </ul>
         <p><b>Atajos de teclado:</b></p>
         <ul>
@@ -1479,6 +1829,7 @@ class MainWindow(QMainWindow):
             <li>F5: Ejecutar análisis</li>
             <li>Ctrl+R: Reiniciar gráficos</li>
             <li>Ctrl+,: Configuración de temas</li>
+            <li>F12: Mostrar/Ocultar Terminal</li>
             <li>F1: Documentación</li>
         </ul>
         """
@@ -1492,13 +1843,13 @@ class MainWindow(QMainWindow):
         theme = self.theme_manager.get_current_theme()
         about_text = f"""
         <h3>LAMOST Spectrum Analyzer</h3>
-        <p>Versión con temas personalizables</p>
-        <p>Herramienta para análisis espectral de datos FITS</p>
+        <p>Versión Universal con temas personalizables</p>
+        <p>Herramienta para análisis espectral de datos FITS y archivos universales</p>
         <p>Desarrollado con PyQt5 y matplotlib</p>
         <p><b>Tema actual:</b> {self.theme_manager.current_theme_name.title()}</p>
         <p><b>Color acento:</b> <span style="color: {theme['accent']};">{theme['accent']}</span></p>
         <hr>
-        <p style="color: {theme['text_muted']};">© 2024 LAMOST Analysis Team</p>
+        <p style="color: {theme['text_muted']};">© 2024 LAMOST Analysis Team & Community</p>
         """
         msg = QMessageBox(self)
         msg.setWindowTitle("Acerca de")
@@ -1510,9 +1861,8 @@ class MainWindow(QMainWindow):
 def run_gui():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec_())
 
 
